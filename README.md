@@ -31,6 +31,10 @@
     ```bash
     bash <(curl -s https://raw.githubusercontent.com/aoxes/init-server-script/main/init-server.sh)
     ```
-3.  脚本执行完毕后会提示新 SSH 端口，请使用新端口重新连接。
+    如需自定义端口号请将下面命令中`post`替换为你想要设置的端口号
+    ```bash
+    bash <(curl -s https://raw.githubusercontent.com/aoxes/init-server-script/main/init-server.sh) -p post
+    ```
+4.  脚本执行完毕后会提示新 SSH 端口，请使用新端口重新连接。
 
 > **该脚本只在Debain12环境下测试过，其他系统请酌情使用**
