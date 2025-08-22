@@ -71,6 +71,35 @@ DISTRO=$(detect_distro)
 CURRENT_USER=$(whoami)
 PUBLIC_IP=$(curl -s -4 ifconfig.me)
 
+# 解析命令行参数
+CUSTOM_PORT=""
+while getopts "p:" opt; do
+  case $opt in
+    p)
+      CUSTOM_PORT=$OPTARG
+      # 简单的端口号验证，确保是数字
+      if ! [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]]; then
+        echo "错误: 端口号必须是数字." >&2
+        exit 1
+      fi
+      ;;
+    \?)
+      echo "无效的选项: -$OPTARG" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# 根据是否传入参数来决定 SSH 端口
+if [ -n "$CUSTOM_PORT" ]; then
+    NEW_PORT=$CUSTOM_PORT
+    echo "使用用户指定的 SSH 端口: $NEW_PORT"
+else
+    NEW_PORT=$(generate_ssh_port)
+    echo "未指定端口，生成随机 SSH 端口: $NEW_PORT"
+fi
+# --- 新增代码部分结束 ---
+
 # 根据系统选择包管理器
 case "$DISTRO" in
     ubuntu|debian)
@@ -109,7 +138,6 @@ fi
 STEP=2
 progress $STEP $TOTAL_STEPS "安装 Fail2ban 和 SSH 配置..."
 if sudo bash -c "$PM_INSTALL fail2ban" > /dev/null 2>&1; then
-    NEW_PORT=$(generate_ssh_port)
     sudo sed -i "s/^#Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
     sudo sed -i "s/^Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
     sudo systemctl restart sshd > /dev/null 2>&1
