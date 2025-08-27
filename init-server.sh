@@ -195,14 +195,13 @@ fi
 # Step 3: 设置时区
 STEP=4
 progress $STEP $TOTAL_STEPS "自动设置时区..."
-TIMEZONE=$(curl -s "http://worldtimeapi.org/api/ip" | grep -oP '"timezone":"\K[^"]+')
+TIMEZONE=$(curl -s https://ipapi.co/timezone)
 if [ -n "$TIMEZONE" ]; then
     if sudo timedatectl set-timezone "$TIMEZONE" > /dev/null 2>&1; then
-        progress_done $STEP $TOTAL_STEPS "自动设置时区"
+        progress_done $STEP $TOTAL_STEPS "自动设置时区 ($TIMEZONE)"
     else
         progress_failed $STEP $TOTAL_STEPS "自动设置时区"
         echo "⚠️ 无法设置时区，请手动设置: sudo timedatectl set-timezone <Your/Timezone>"
-        exit 1
     fi
 else
     progress_failed $STEP $TOTAL_STEPS "自动设置时区"
