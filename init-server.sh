@@ -240,6 +240,10 @@ install_docker() {
 
 # 解析参数
 parse_args "$@"
+# 只有当用户指定了端口时，才打印
+if [ -n "$CUSTOM_PORT" ]; then
+    echo "使用自定义端口: $CUSTOM_PORT"
+fi
 # 检测系统
 detect_distro
 CURRENT_USER=$(whoami)
