@@ -190,6 +190,21 @@ configure_firewall() {
         FIREWALL="ufw"
     fi
 
+    # 如果未找到防火墙工具，尝试安装
+    if [ -z "$FIREWALL" ]; then
+        if [ "$OS_ID" == "ubuntu" ] || [ "$OS_ID" == "debian" ]; then
+            run_cmd apt-get update -y
+            if run_cmd apt-get install -y ufw; then
+                FIREWALL="ufw"
+            fi
+        elif [ "$OS_ID" == "centos" ] || [ "$OS_ID" == "rhel" ] || [ "$OS_ID" == "fedora" ]; then
+            run_cmd yum install -y firewalld
+            if run_cmd systemctl enable firewalld --now; then
+                FIREWALL="firewalld"
+            fi
+        fi
+    fi
+
     if [ "$FIREWALL" = "ufw" ]; then
         run_cmd ufw default deny incoming
         run_cmd ufw default allow outgoing
@@ -206,7 +221,7 @@ configure_firewall() {
     else
         progress_done "未配置防火墙"
         echo "⚠ 未配置防火墙，请手动放行 80/443/$NEW_PORT"
-        return 0 # 即使未找到防火墙，也成功退出该函数
+        return 0
     fi
 }
 
