@@ -1,240 +1,309 @@
 #!/bin/bash
+set -e
 
-# 随机 SSH 端口生成函数
+# ============ 全局变量与参数解析 ============
+DEBUG=false
+CUSTOM_PORT=""
+ADD_DOCKER=false
+TOTAL_STEPS=4
+
+# 解析命令行参数
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -p|--port)
+                CUSTOM_PORT="$2"
+                shift 2
+                ;;
+            --add)
+                if [[ "$2" == "docker" ]]; then
+                    ADD_DOCKER=true
+                fi
+                shift 2
+                ;;
+            --debug)
+                DEBUG=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    # 如果添加Docker，总步骤数加1
+    if $ADD_DOCKER; then
+        TOTAL_STEPS=5
+    fi
+}
+
+# ============ 工具函数 ============
+
+# 生成一个随机的SSH端口（10000 - 65535）
 generate_ssh_port() {
     echo $((10000 + RANDOM % 55536))
 }
 
-# 检测发行版
+# 检测操作系统发行版
 detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        echo "$ID"
+        OS_ID=$ID
+        OS_VERSION=$VERSION_ID
     else
-        echo "unknown"
+        OS_ID=$(uname -s | tr '[:upper:]' '[:lower:]')
+        OS_VERSION=$(uname -r)
+    fi
+    if [ -z "$OS_ID" ]; then
+        >&2 echo "错误: 无法检测到支持的操作系统."
+        exit 1
     fi
 }
 
-# 显示进度条函数
+# 运行命令，在非调试模式下隐藏输出
+run_cmd() {
+    if $DEBUG; then
+        "$@"
+    else
+        "$@" >/dev/null 2>&1
+    fi
+}
+
+# 进度条函数：显示进行中 (50%)
 progress() {
-    local step="$1"
-    local total="$2"
-    local msg="$3"
-
-    local percent=$(( step * 100 / total ))
+    $DEBUG && return
+    local msg="$1"
     local bar_len=50
+    local percent=50
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
-
     printf "\r["
     printf "%0.s#" $(seq 1 $filled)
     printf "%0.s-" $(seq 1 $empty)
-    printf "] %d%% %s" "$percent" "$msg"
+    printf "] %d%% %s..." "$percent" "$msg"
 }
 
-# 每步执行完毕后换行并显示成功信息
+# 进度条函数：显示完成 (100%)
 progress_done() {
-    local step="$1"
-    local total="$2"
-    local msg="$3"
-    local percent=$(( step * 100 / total ))
+    $DEBUG && { echo "[OK] $1"; return; }
+    local msg="$1"
     local bar_len=50
+    local percent=100
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
-
     printf "\r["
     printf "%0.s#" $(seq 1 $filled)
-    printf "%0.s-" $(seq 1 $empty)
-    printf "] %d%% %s成功 ✅" "$percent" "$msg"
-    echo ""
+    if [ "$empty" -gt 0 ]; then printf "%0.s-" $(seq 1 "$empty"); fi
+    printf "] %d%% %s成功 ✅\n" "$percent" "$msg"
 }
 
-# 每步执行完毕后换行并显示失败信息
+# 进度条函数：显示失败 (当前步长)
 progress_failed() {
-    local step="$1"
-    local total="$2"
-    local msg="$3"
-    local percent=$(( step * 100 / total ))
+    $DEBUG && { echo "[FAIL] $1"; return; }
+    local msg="$1"
     local bar_len=50
+    local percent=$(( (STEP-1) * 100 / TOTAL_STEPS + 50 ))
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
-
     printf "\r["
     printf "%0.s#" $(seq 1 $filled)
-    printf "%0.s-" $(seq 1 $empty)
-    printf "] %d%% %s失败 ❌" "$percent" "$msg"
-    echo ""
+    if [ "$empty" -gt 0 ]; then printf "%0.s-" $(seq 1 "$empty"); fi
+    printf "] %d%% %s失败 ❌\n" "$percent" "$msg"
 }
 
-TOTAL_STEPS=5
-DISTRO=$(detect_distro)
-CURRENT_USER=$(whoami)
-PUBLIC_IP=$(curl -s -4 ifconfig.me)
+# ============ 安装与配置函数 ============
 
-# 解析命令行参数
-CUSTOM_PORT=""
-while getopts "p:" opt; do
-  case $opt in
-    p)
-      CUSTOM_PORT=$OPTARG
-      # 简单的端口号验证，确保是数字
-      if ! [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]]; then
-        echo "错误: 端口号必须是数字." >&2
-        exit 1
-      fi
-      ;;
-    \?)
-      echo "无效的选项: -$OPTARG" >&2
-      exit 1
-      ;;
-  esac
-done
+# 安装Fail2ban并配置SSH服务
+install_fail2ban_and_ssh() {
+    $DEBUG && echo "[DEBUG] 在 $OS_ID $OS_VERSION 上安装 fail2ban"
 
-# 根据是否传入参数来决定 SSH 端口
-if [ -n "$CUSTOM_PORT" ]; then
-    NEW_PORT=$CUSTOM_PORT
-    echo "使用用户指定的 SSH 端口: $NEW_PORT"
-else
-    NEW_PORT=$(generate_ssh_port)
-    echo "未指定端口，生成随机 SSH 端口: $NEW_PORT"
-fi
-# --- 新增代码部分结束 ---
+    # 根据不同操作系统安装Fail2ban
+    case "$OS_ID" in
+        ubuntu|debian)
+            run_cmd apt-get update -y
+            run_cmd apt-get install -y fail2ban rsyslog
+            ;;
+        centos|rhel|fedora)
+            run_cmd yum install -y epel-release fail2ban
+            ;;
+        alpine)
+            run_cmd apk add --no-cache fail2ban
+            ;;
+        arch)
+            run_cmd pacman -Sy --noconfirm fail2ban
+            ;;
+        *)
+            >&2 echo "不支持的系统: $OS_ID"
+            return 1
+            ;;
+    esac
 
-# 根据系统选择包管理器
-case "$DISTRO" in
-    ubuntu|debian)
-        PM_UPDATE="apt update && apt full-upgrade -y"
-        PM_INSTALL="apt install -y"
-        FIREWALL="ufw"
-        ;;
-    centos|rhel)
-        PM_UPDATE="yum update -y"
-        PM_INSTALL="yum install -y"
-        FIREWALL="firewalld"
-        ;;
-    fedora)
-        PM_UPDATE="dnf upgrade -y"
-        PM_INSTALL="dnf install -y"
-        FIREWALL="firewalld"
-        ;;
-    *)
-        PM_UPDATE="echo '请手动更新系统'"
-        PM_INSTALL="echo '请手动安装软件'"
-        FIREWALL="manual"
-        ;;
-esac
+    # 确定Fail2ban的封禁行为
+    local BANACTION
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        BANACTION="firewallcmd-ipset"
+    elif command -v ufw >/dev/null 2>&1; then
+        BANACTION="ufw"
+    else
+        BANACTION="iptables-allports"
+    fi
 
-# Step 0: 更新系统
-STEP=1
-progress $STEP $TOTAL_STEPS "更新系统..."
-if sudo bash -c "$PM_UPDATE" > /dev/null 2>&1; then
-    progress_done $STEP $TOTAL_STEPS "更新系统"
-else
-    progress_failed $STEP $TOTAL_STEPS "更新系统"
-    exit 1
-fi
+    # 确定日志文件路径
+    local LOG_FILE="/var/log/auth.log"
+    [ -f /var/log/secure ] && LOG_FILE="/var/log/secure"
 
-# Step 1: 安装 Fail2ban 并改端口
-STEP=2
-progress $STEP $TOTAL_STEPS "安装 Fail2ban 和 SSH 配置..."
-if sudo bash -c "$PM_INSTALL fail2ban" > /dev/null 2>&1; then
-    sudo sed -i "s/^#Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
-    sudo sed -i "s/^Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
-    sudo systemctl restart sshd > /dev/null 2>&1
-    sudo tee /etc/fail2ban/jail.local > /dev/null <<EOF
+    # 生成并写入Fail2ban配置文件
+    # 核心修改：bantime设置为-1，findtime为86400秒（1天），maxretry为3
+    cat <<EOF | sudo tee /etc/fail2ban/jail.local >/dev/null
 [DEFAULT]
-bantime = 1w
-findtime = 10m
+bantime = -1
+findtime = 86400
 maxretry = 3
+banaction = $BANACTION
+action = %(action_mwl)s
 
 [sshd]
 enabled = true
-port    = $NEW_PORT
-logpath = /var/log/auth.log
+port = $NEW_PORT
+logpath = $LOG_FILE
 EOF
-    sudo systemctl enable fail2ban --now > /dev/null 2>&1
-    progress_done $STEP $TOTAL_STEPS "安装 Fail2ban 和 SSH 配置"
+    
+    # 重启相关服务
+    if command -v systemctl >/dev/null 2>&1; then
+        run_cmd systemctl enable --now fail2ban
+        run_cmd systemctl restart sshd || run_cmd systemctl restart ssh
+    else
+        run_cmd rc-update add fail2ban default
+        run_cmd rc-service fail2ban start
+        run_cmd service ssh restart || run_cmd service sshd restart
+    fi
+
+    # 修改SSH服务端口
+    run_cmd sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
+}
+
+# 配置防火墙
+configure_firewall() {
+    local FIREWALL=""
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        FIREWALL="firewalld"
+    elif command -v ufw >/dev/null 2>&1; then
+        FIREWALL="ufw"
+    fi
+
+    if [ "$FIREWALL" = "ufw" ]; then
+        run_cmd ufw default deny incoming
+        run_cmd ufw default allow outgoing
+        run_cmd ufw allow 80/tcp
+        run_cmd ufw allow 443/tcp
+        run_cmd ufw allow "$NEW_PORT"/tcp
+        run_cmd ufw --force enable
+    elif [ "$FIREWALL" = "firewalld" ]; then
+        run_cmd systemctl enable firewalld --now
+        run_cmd firewall-cmd --permanent --add-service=http
+        run_cmd firewall-cmd --permanent --add-service=https
+        run_cmd firewall-cmd --permanent --add-port="${NEW_PORT}/tcp"
+        run_cmd firewall-cmd --reload
+    else
+        progress_done "未配置防火墙"
+        echo "⚠ 未配置防火墙，请手动放行 80/443/$NEW_PORT"
+        return 0 # 即使未找到防火墙，也成功退出该函数
+    fi
+}
+
+# 安装Docker和Docker Compose
+install_docker() {
+    # 使用官方脚本安装Docker
+    if ! curl -sSL https://get.docker.com/ | sh; then
+        return 1
+    fi
+    # 启用并启动Docker服务
+    if ! sudo systemctl enable docker --now; then
+        return 1
+    fi
+    # 从GitHub安装Docker Compose
+    local LATEST_COMPOSE
+    LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f4)
+    if [ -z "$LATEST_COMPOSE" ]; then
+        return 1
+    fi
+    # 下载、授权并创建软链接
+    if ! sudo curl -L "https://github.com/docker/compose/releases/download/${LATEST_COMPOSE}/docker-compose-$(uname -s)-$(uname -m)" \
+        -o /usr/local/bin/docker-compose; then
+        return 1
+    fi
+    if ! sudo chmod +x /usr/local/bin/docker-compose || ! sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose; then
+        return 1
+    fi
+}
+
+# ============ 主流程 ============
+
+# 解析参数
+parse_args "$@"
+# 检测系统
+detect_distro
+CURRENT_USER=$(whoami)
+PUBLIC_IP=$(curl -s -4 ifconfig.me || echo "UNKNOWN")
+
+# 确定SSH端口
+if [ -n "$CUSTOM_PORT" ]; then
+    NEW_PORT="$CUSTOM_PORT"
 else
-    progress_failed $STEP $TOTAL_STEPS "安装 Fail2ban 和 SSH 配置"
+    NEW_PORT=$(generate_ssh_port)
+fi
+
+# 步骤1: 更新系统软件包
+STEP=1
+progress "更新系统"
+if run_cmd apt-get update -y || run_cmd yum update -y; then
+    progress_done "更新系统"
+else
+    progress_failed "更新系统"
     exit 1
 fi
 
-# Step 2: 配置防火墙
+# 步骤2: 安装Fail2ban并配置SSH
+STEP=2
+progress "安装 Fail2ban 和配置 SSH"
+if install_fail2ban_and_ssh; then
+    progress_done "安装 Fail2ban 和配置 SSH"
+else
+    progress_failed "安装 Fail2ban 和配置 SSH"
+    exit 1
+fi
+
+# 步骤3: 配置防火墙
 STEP=3
-progress $STEP $TOTAL_STEPS "配置防火墙..."
-if [ "$FIREWALL" = "ufw" ]; then
-    if sudo bash -c "$PM_INSTALL ufw" > /dev/null 2>&1 && \
-       sudo ufw default deny incoming > /dev/null 2>&1 && \
-       sudo ufw default allow outgoing > /dev/null 2>&1 && \
-       sudo ufw allow 80/tcp > /dev/null 2>&1 && \
-       sudo ufw allow 443/tcp > /dev/null 2>&1 && \
-       sudo ufw allow $NEW_PORT/tcp > /dev/null 2>&1 && \
-       sudo ufw --force enable > /dev/null 2>&1; then
-        progress_done $STEP $TOTAL_STEPS "配置防火墙"
-    else
-        progress_failed $STEP $TOTAL_STEPS "配置防火墙"
-        exit 1
-    fi
-elif [ "$FIREWALL" = "firewalld" ]; then
-    if sudo bash -c "$PM_INSTALL firewalld" > /dev/null 2>&1 && \
-       sudo systemctl enable firewalld --now > /dev/null 2>&1 && \
-       sudo firewall-cmd --permanent --add-service=http > /dev/null 2>&1 && \
-       sudo firewall-cmd --permanent --add-service=https > /dev/null 2>&1 && \
-       sudo firewall-cmd --permanent --add-port=${NEW_PORT}/tcp > /dev/null 2>&1 && \
-       sudo firewall-cmd --reload > /dev/null 2>&1; then
-        progress_done $STEP $TOTAL_STEPS "配置防火墙"
-    else
-        progress_failed $STEP $TOTAL_STEPS "配置防火墙"
-        exit 1
-    fi
+progress "配置防火墙"
+if configure_firewall; then
+    progress_done "配置防火墙"
 else
-    progress_done $STEP $TOTAL_STEPS "未配置防火墙"
-    echo "⚠ 未配置防火墙，请手动放行 80/443/$NEW_PORT"
-fi
-
-# Step 3: 设置时区
-STEP=4
-progress $STEP $TOTAL_STEPS "自动设置时区..."
-TIMEZONE=$(curl -s https://ipapi.co/timezone)
-if [ -n "$TIMEZONE" ]; then
-    if sudo timedatectl set-timezone "$TIMEZONE" > /dev/null 2>&1; then
-        progress_done $STEP $TOTAL_STEPS "自动设置时区 ($TIMEZONE)"
-    else
-        progress_failed $STEP $TOTAL_STEPS "自动设置时区"
-        echo "⚠️ 无法设置时区，请手动设置: sudo timedatectl set-timezone <Your/Timezone>"
-    fi
-else
-    progress_failed $STEP $TOTAL_STEPS "自动设置时区"
-    echo "⚠️ 无法获取时区，请手动设置: sudo timedatectl set-timezone <Your/Timezone>"
-fi
-
-# Step 4: 安装 Docker
-STEP=5
-progress $STEP $TOTAL_STEPS "安装 Docker..."
-if curl -sSL https://get.docker.com/ | sh > /dev/null 2>&1; then
-    if sudo systemctl enable docker --now > /dev/null 2>&1; then
-        LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f4)
-        if sudo curl -L "https://github.com/docker/compose/releases/download/${LATEST_COMPOSE}/docker-compose-$(uname -s)-$(uname -m)" \
-            -o /usr/local/bin/docker-compose > /dev/null 2>&1; then
-            if sudo chmod +x /usr/local/bin/docker-compose > /dev/null 2>&1 && \
-               sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose > /dev/null 2>&1; then
-                progress_done $STEP $TOTAL_STEPS "安装 Docker"
-            else
-                progress_failed $STEP $TOTAL_STEPS "安装 Docker"
-                exit 1
-            fi
-        else
-            progress_failed $STEP $TOTAL_STEPS "安装 Docker"
-            exit 1
-        fi
-    else
-        progress_failed $STEP $TOTAL_STEPS "安装 Docker"
-        exit 1
-    fi
-else
-    progress_failed $STEP $TOTAL_STEPS "安装 Docker"
+    progress_failed "配置防火墙"
     exit 1
 fi
 
+# 步骤4: 设置时区
+STEP=4
+progress "自动设置时区"
+TIMEZONE=$(curl -s https://ipapi.co/timezone)
+if [ -n "$TIMEZONE" ] && run_cmd timedatectl set-timezone "$TIMEZONE"; then
+    progress_done "自动设置时区 ($TIMEZONE)"
+else
+    progress_failed "自动设置时区"
+fi
+
+# 步骤5: 安装Docker (如果用户选择)
+if $ADD_DOCKER; then
+    STEP=5
+    progress "安装 Docker"
+    if install_docker; then
+        progress_done "安装 Docker"
+    else
+        progress_failed "安装 Docker"
+        exit 1
+    fi
+fi
+
+echo ""
 echo "SSH 新端口: $NEW_PORT"
-echo "请使用新端口重新连接: ssh -p $NEW_PORT $CURRENT_USER@$PUBLIC_IP"
+echo "请使用新端口连接: ssh -p $NEW_PORT $CURRENT_USER@$PUBLIC_IP"
