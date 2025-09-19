@@ -166,7 +166,10 @@ enabled = true
 port = $NEW_PORT
 logpath = $LOG_FILE
 EOF
-    
+
+    # 修改SSH服务端口
+    run_cmd sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
+
     # 重启相关服务
     if command -v systemctl >/dev/null 2>&1; then
         run_cmd systemctl enable --now fail2ban
@@ -176,9 +179,6 @@ EOF
         run_cmd rc-service fail2ban start
         run_cmd service ssh restart || run_cmd service sshd restart
     fi
-
-    # 修改SSH服务端口
-    run_cmd sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
 }
 
 # 配置防火墙
