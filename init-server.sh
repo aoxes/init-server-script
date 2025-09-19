@@ -101,7 +101,8 @@ progress_failed() {
     $DEBUG && { echo "[FAIL] $1"; return; }
     local msg="$1"
     local bar_len=50
-    local percent=$(( (STEP-1) * 100 / TOTAL_STEPS + 50 ))
+    # 修正百分比计算，失败时显示当前步骤的进度
+    local percent=$(( (STEP - 1) * 100 / TOTAL_STEPS + 50 ))
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
     printf "\r["
@@ -227,26 +228,21 @@ configure_firewall() {
 
 # 安装Docker和Docker Compose
 install_docker() {
-    # 使用官方脚本安装Docker
-    if ! curl -sSL https://get.docker.com/ | sh; then
+    # 安装Docker
+    if ! curl -sSL https://get.docker.com/ | sh >/dev/null 2>&1; then
         return 1
     fi
-    # 启用并启动Docker服务
-    if ! sudo systemctl enable docker --now; then
+    if ! run_cmd sudo systemctl enable docker --now; then
         return 1
     fi
-    # 从GitHub安装Docker Compose
-    local LATEST_COMPOSE
+
+    # 安装Docker Compose
     LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f4)
-    if [ -z "$LATEST_COMPOSE" ]; then
-        return 1
-    fi
-    # 下载、授权并创建软链接
-    if ! sudo curl -L "https://github.com/docker/compose/releases/download/${LATEST_COMPOSE}/docker-compose-$(uname -s)-$(uname -m)" \
+    if ! run_cmd sudo curl -L "https://github.com/docker/compose/releases/download/${LATEST_COMPOSE}/docker-compose-$(uname -s)-$(uname -m)" \
         -o /usr/local/bin/docker-compose; then
         return 1
     fi
-    if ! sudo chmod +x /usr/local/bin/docker-compose || ! sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose; then
+    if ! run_cmd sudo chmod +x /usr/local/bin/docker-compose || ! run_cmd sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose; then
         return 1
     fi
 }
